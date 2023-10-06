@@ -1,0 +1,928 @@
+---
+title: "Liquidity_Project_Final"
+author: "Sai Gogineni, Andrew Thomas, Tanishka Kapoor"
+date: "2023-08-19"
+output: html_document
+---
+
+```{r}
+#libraries used for the project 
+
+library(Riex)
+library(quantmod)
+library(xts)
+library(ggplot2)
+library(data.table)
+library(rlist)
+library(isotree)
+library(dplyr)
+library(purrr)
+library(patchwork)
+library(cowplot)
+library(reshape2)
+library(lubridate)
+```
+
+```{r}
+
+#election data for CVX (Chevron)
+
+#pre-election 
+CVX_TAQ_pre1 <- read.csv("CVX_2016_11-03.csv")
+CVX_TAQ_pre2 <- read.csv("CVX_2016_11-04.csv")
+CVX_TAQ_pre3 <- read.csv("CVX_2016_11-07.csv")
+
+#post-election 
+CVX_TAQ_post1 <- read.csv("CVX_2016_11-09.csv")
+CVX_TAQ_post2 <- read.csv("CVX_2016_11-10.csv")
+CVX_TAQ_post3 <- read.csv("CVX_2016_11-11.csv")
+
+
+#election data for XOM (Exxon)
+
+#pre-election 
+XOM_TAQ_pre1 <- read.csv("XOM_2016_11-03.csv")
+XOM_TAQ_pre2 <- read.csv("XOM_2016_11-04.csv")
+XOM_TAQ_pre3 <- read.csv("XOM_2016_11-07.csv")
+
+#post-election 
+XOM_TAQ_post1 <- read.csv("XOM_2016_11-09.csv")
+XOM_TAQ_post2 <- read.csv("XOM_2016_11-10.csv")
+XOM_TAQ_post3 <- read.csv("XOM_2016_11-11.csv")
+
+```
+
+```{r}
+#this function takes a stock TAQ information and finds matching timestamps in the trade
+#and quote
+
+#this is very useful because it extracts the important information and put it 
+
+#in a data frame so that we can compress our data into a smaller CSV file and  
+#not only eliminate redundancy but make the code run much faster 
+
+match_tradeandquote <- function(ticker,price_data,volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data){
+  
+trade <- subset(ticker, Type == "Trade")
+quote <- subset(ticker, Type == "Quote")
+trade_index <- 1
+quote_index <- 1
+matched_data <- list()
+
+trade_timestamp <- strptime(trade$Date.Time, format = "%Y-%m-%dT%H:%M:%OSZ")
+quote_timestamp <- strptime(quote$Date.Time, format = "%Y-%m-%dT%H:%M:%OSZ")
+
+price_data <-  trade$Price
+volume_data <- trade$Volume
+bidprice_data <- quote$Bid.Price
+askprice_data <- quote$Ask.Price
+bidsize_data <- quote$Bid.Size*100
+asksize_data <- quote$Ask.Size*100
+midpoint_data <- (quote$Bid.Price + quote$Ask.Price)/2
+
+
+while(trade_index <= length(price_data) && quote_index <= length(midpoint_data)){
+  
+  trade_stamp <- trade_timestamp[trade_index]
+  quote_stamp <- quote_timestamp[quote_index]
+  
+ if(trade_stamp == quote_stamp){
+   
+    if (quote_index < length(midpoint_data) && quote_timestamp[quote_index + 1] == trade_stamp) {
+        quote_index <- quote_index + 1
+        next
+    }
+   
+matched_data <- c(matched_data, list(list(price = price_data[trade_index], volume = volume_data[trade_index], bidprice = bidprice_data[quote_index], askprice = askprice_data[quote_index], bidsize = bidsize_data[quote_index], asksize = asksize_data[quote_index], midpoint = midpoint_data[quote_index], time = trade_stamp)))
+
+   trade_index <- trade_index + 1 
+   quote_index <- quote_index + 1
+ 
+ }else if (trade_stamp < quote_stamp){
+    
+    trade_index <- trade_index + 1
+  
+  }else{
+    quote_index <- quote_index + 1
+  }
+}
+price <- c()
+volume <- c()
+bidprice <- c()
+askprice <- c()
+bidsize <- c()
+asksize <- c()
+midpoint <- c()
+time <- c() 
+
+for(i in 1:(length(matched_data)-1)){
+  price_data <- matched_data[[i]]$price
+  price <- c(price_data,price)
+  
+  volume_data <- matched_data[[i]]$volume
+  volume <- c(volume_data,volume)
+  
+  bidprice_data <- matched_data[[i]]$bidprice
+  bidprice <- c(bidprice_data,bidprice)
+  
+  askprice_data <-matched_data[[i]]$askprice
+  askprice <- c(askprice_data,askprice)
+  
+  bidsize_data <- matched_data[[i]]$bidsize
+  bidsize <- c(bidsize_data,bidsize)
+  
+  asksize_data <- matched_data[[i]]$asksize
+  asksize <- c(asksize_data,asksize)
+  
+  midpoint_price <- matched_data[[i]]$midpoint
+  midpoint <- c(midpoint_price,midpoint)
+  
+  trade_time <- matched_data[[i]]$time
+  time <- c(trade_time,time)
+ }
+df <- data.frame(price = price, volume = volume, bidprice = bidprice, askprice = askprice, bidsize = bidsize, asksize = asksize, midpoint = midpoint, time = time)
+new_df <- df[rev(seq_len(nrow(df))),]
+return(new_df)
+}
+
+```
+
+
+```{r}
+
+#takes our original csv file and compresses it using the match_tradeandquote function defined above 
+
+#this will write a new csv file that can run the liquidity measures and the models much faster 
+
+#you only have to run this code once
+
+
+#compressed election data for CVX
+
+#pre-election 
+
+result_CVX_pre1 <- match_tradeandquote(CVX_TAQ_pre1, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_pre1 <- "CVX_2016_11-03_new.csv"
+
+write.csv(result_CVX_pre1, file = output_file_CVX_pre1, row.names = FALSE)
+
+result_CVX_pre2 <- match_tradeandquote(CVX_TAQ_pre2, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_pre2 <- "CVX_2016_11-04_new.csv"
+
+write.csv(result_CVX_pre2, file = output_file_CVX_pre2, row.names = FALSE)
+
+result_CVX_pre3 <- match_tradeandquote(CVX_TAQ_pre3, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_pre3 <- "CVX_2016_11-07_new.csv"
+
+write.csv(result_CVX_pre3, file = output_file_CVX_pre3, row.names = FALSE)
+
+#post-election 
+
+result_CVX_post1 <- match_tradeandquote(CVX_TAQ_post1, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_post1 <- "CVX_2016_11-09_new.csv"
+
+write.csv(result_CVX_post1, file = output_file_CVX_post1, row.names = FALSE) 
+
+result_CVX_post2 <- match_tradeandquote(CVX_TAQ_post2, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_post2 <- "CVX_2016_11-10_new.csv"
+
+write.csv(result_CVX_post2, file = output_file_CVX_post2, row.names = FALSE) 
+
+result_CVX_post3 <- match_tradeandquote(CVX_TAQ_post3, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_CVX_post3 <- "CVX_2016_11-11_new.csv"
+
+write.csv(result_CVX_post3, file = output_file_CVX_post3, row.names = FALSE) 
+
+#compressed election data for XOM 
+
+#pre-election 
+
+result_XOM_pre1 <- match_tradeandquote(XOM_TAQ_pre1, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_pre1 <- "XOM_2016_11-03_new.csv"
+
+write.csv(result_XOM_pre1, file = output_file_XOM_pre1, row.names = FALSE)
+
+result_XOM_pre2 <- match_tradeandquote(XOM_TAQ_pre2, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_pre2 <- "XOM_2016_11-04_new.csv"
+
+write.csv(result_XOM_pre2, file = output_file_XOM_pre2, row.names = FALSE)
+
+result_XOM_pre3 <- match_tradeandquote(XOM_TAQ_pre3, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_pre3 <- "XOM_2016_11-07_new.csv"
+
+write.csv(result_XOM_pre3, file = output_file_XOM_pre3, row.names = FALSE)
+
+#post-election 
+
+result_XOM_post1 <- match_tradeandquote(XOM_TAQ_post1, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_post1 <- "XOM_2016_11-09_new.csv"
+
+write.csv(result_XOM_post1, file = output_file_XOM_post1, row.names = FALSE)
+
+result_XOM_post2 <- match_tradeandquote(XOM_TAQ_post2, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_post2 <- "XOM_2016_11-10_new.csv"
+
+write.csv(result_XOM_post2, file = output_file_XOM_post2, row.names = FALSE)
+
+result_XOM_post3 <- match_tradeandquote(XOM_TAQ_post3, price_data, volume_data, bidprice_data, askprice_data, bidsize_data, asksize_data, midpoint_data)
+
+output_file_XOM_post3 <- "XOM_2016_11-11_new.csv"
+
+write.csv(result_XOM_post3, file = output_file_XOM_post3, row.names = FALSE)
+
+
+```
+
+
+```{r}
+#loads the new CSV files 
+
+#new pre-election data for CVX
+
+CVX_TAQ_pre1_new <- read.csv("CVX_2016_11-03_new.csv")
+CVX_TAQ_pre1_new$time <- as.POSIXct(CVX_TAQ_pre1_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+CVX_TAQ_pre1_new$date <- "11-03-2016"
+CVX_TAQ_pre1_new$ticker <- "CVX"
+
+CVX_TAQ_pre2_new <- read.csv("CVX_2016_11-04_new.csv")
+CVX_TAQ_pre2_new$time <- as.POSIXct(CVX_TAQ_pre2_new$time, format = "%Y-%m-%d %H:%M:%OS") -
+hours(5)
+CVX_TAQ_pre2_new$date <- "11-04-2016"
+CVX_TAQ_pre2_new$ticker <- "CVX"
+
+CVX_TAQ_pre3_new <- read.csv("CVX_2016_11-07_new.csv")
+CVX_TAQ_pre3_new$time <- as.POSIXct(CVX_TAQ_pre3_new$time, format = "%Y-%m-%d %H:%M:%OS") -
+hours(5)
+CVX_TAQ_pre3_new$date <- "11-07-2016"
+CVX_TAQ_pre3_new$ticker <- "CVX"
+
+#new post-election data for CVX
+
+CVX_TAQ_post1_new <- read.csv("CVX_2016_11-09_new.csv")
+CVX_TAQ_post1_new$time <- as.POSIXct(CVX_TAQ_post1_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+CVX_TAQ_post1_new$date <- "11-09-2016"
+CVX_TAQ_post1_new$ticker <- "CVX"
+
+CVX_TAQ_post2_new <- read.csv("CVX_2016_11-10_new.csv")
+CVX_TAQ_post2_new$time <- as.POSIXct(CVX_TAQ_post2_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+CVX_TAQ_post2_new$date <- "11-10-2016"
+CVX_TAQ_post2_new$ticker <- "CVX"
+
+
+CVX_TAQ_post3_new <- read.csv("CVX_2016_11-11_new.csv")
+CVX_TAQ_post3_new$time <- as.POSIXct(CVX_TAQ_post3_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+CVX_TAQ_post3_new$date <- "11-11-2016"
+CVX_TAQ_post3_new$ticker <- "CVX"
+
+#new pre-election data for XOM 
+
+XOM_TAQ_pre1_new <- read.csv("XOM_2016_11-03_new.csv")
+XOM_TAQ_pre1_new$time <- as.POSIXct(XOM_TAQ_pre1_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+XOM_TAQ_pre1_new$date <- "11-03-2016"
+XOM_TAQ_pre1_new$ticker <- "XOM"
+
+XOM_TAQ_pre2_new <- read.csv("XOM_2016_11-04_new.csv")
+XOM_TAQ_pre2_new$time <- as.POSIXct(XOM_TAQ_pre2_new$time, format = "%Y-%m-%d %H:%M:%OS") -
+hours(5)
+XOM_TAQ_pre2_new$date <- "11-04-2016"
+XOM_TAQ_pre2_new$ticker <- "XOM"
+
+XOM_TAQ_pre3_new <- read.csv("XOM_2016_11-07_new.csv")
+XOM_TAQ_pre3_new$time <- as.POSIXct(XOM_TAQ_pre3_new$time, format = "%Y-%m-%d %H:%M:%OS") -
+hours(5)
+XOM_TAQ_pre3_new$date <- "11-07-2016"
+XOM_TAQ_pre3_new$ticker <- "XOM"
+
+#new post-election data for XOM 
+
+XOM_TAQ_post1_new <- read.csv("XOM_2016_11-09_new.csv")
+XOM_TAQ_post1_new$time <- as.POSIXct(XOM_TAQ_post1_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+XOM_TAQ_post1_new$date <- "11-09-2016"
+XOM_TAQ_post1_new$ticker <- "XOM"
+
+XOM_TAQ_post2_new <- read.csv("XOM_2016_11-10_new.csv")
+XOM_TAQ_post2_new$time <- as.POSIXct(XOM_TAQ_post2_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+XOM_TAQ_post2_new$date <- "11-10-2016"
+XOM_TAQ_post2_new$ticker <- "XOM"
+
+XOM_TAQ_post3_new <- read.csv("XOM_2016_11-11_new.csv")
+XOM_TAQ_post3_new$time <- as.POSIXct(XOM_TAQ_post3_new$time, format = "%Y-%m-%d %H:%M:%OS") - hours(5)
+XOM_TAQ_post3_new$date <- "11-11-2016"
+XOM_TAQ_post3_new$ticker <- "XOM"
+
+```
+
+
+
+
+```{r}
+#this functions takes our liquidity measures and graphs them (this will be used in our poster)
+
+Graph_Measures <- function(measure_function, x_value, y_value, x_name, y_name, title){
+  plot <- ggplot(data = measure_function, aes(x = x_value, y = y_value)) +
+    geom_histogram(stat = "identity", fill = "blue", color = "black") +
+    labs(x = x_name, y = y_name, title = title)
+  return (plot)
+}
+```
+
+```{r}
+#this function is used for outlier detection (IQR + PERCENTILE Rule)
+
+#PERCENTILES (Works in the case where low numbers = low liquidity and high numbers = high liquidity)
+percentile_outliers <- function(measure, column) {
+  last_percentile <- quantile(column, 0.995)
+  first_percentile <- quantile(column, 0.005)
+  low_liquidity_outliers <- column < first_percentile 
+  high_liquidity_outliers <- column > last_percentile
+  return(list(low_liquidity_outliers = low_liquidity_outliers, high_liquidity_outliers = high_liquidity_outliers))
+}
+
+
+
+#PERCENTILES_ALT  (Works in the case where low numbers = high liquidity and high numbers = low liquidity)
+percentile_alt_outliers <- function(measure, column) {
+  last_percentile <- quantile(column, 0.995)
+  first_percentile <- quantile(column, 0.005)
+  high_liquidity_outliers <- column < first_percentile 
+  low_liquidity_outliers <- column > last_percentile
+  return(list(low_liquidity_outliers = low_liquidity_outliers, high_liquidity_outliers = high_liquidity_outliers))
+}
+
+```
+
+
+```{r}
+#Measure 1 (Absolute Spread)
+
+Abs_Spread_func <- function(stock){
+  df <- stock
+  Ask_Price <- df$askprice
+  Bid_Price <- df$bidprice
+  Time <- df$time
+  Abs_Spread_calc <- Ask_Price - Bid_Price
+  Abs_Spread_time <- cut(Time, breaks = "1 min")
+  Abs_Spread <- aggregate(Abs_Spread_calc ~ Abs_Spread_time, FUN = base::mean) 
+  return(Abs_Spread)
+}
+
+
+```
+
+```{r}
+#Measure 2 (Log Depth)
+
+Log_depth_func <- function(stock){
+  df <- stock
+  Ask_Size <- df$asksize
+  Bid_Size <- df$bidsize
+  Time <- df$time
+  Log_depth_calc <- log(Ask_Size) + log(Bid_Size)
+  Log_depth_time <- cut(Time, breaks = "1 min")
+  Log_depth <- aggregate(Log_depth_calc ~ Log_depth_time, FUN = base::mean)
+  return(Log_depth)
+}
+
+
+```
+
+
+
+```{r}
+#Measure 3 (Trading Volume)
+
+Trading_Vol_func <- function(stock){
+  df <- stock
+  Trading_Vol_calc <- df$volume
+  Time <- df$time
+  Trading_Vol_time <- cut(Time, breaks = "1 min")
+  Volume <- aggregate(Trading_Vol_calc ~ Trading_Vol_time, FUN = base::mean) 
+  return(Volume)
+  }
+
+```
+
+```{r}
+#Measure 4 (Turnover)
+
+Turnover_func <- function(stock){
+   df <- stock
+   Price <- df$price
+   Volume <- df$volume
+   Time <- df$time
+   Turnover_calc <- Price * Volume
+   Turnover_time <- cut(Time, breaks = "1 min")
+   Turnover <- aggregate(Turnover_calc ~ Turnover_time, FUN = base::mean)
+   return(Turnover)
+}
+  
+```
+
+
+```{r}
+#Measure 5 (Market/Excess Depth)
+
+Depth_func <- function(stock){
+  df <- stock
+  BidSize <- df$bidsize
+  AskSize <- df$asksize
+  Time <- df$time
+  Depth_calc <- BidSize - AskSize
+  Depth_time <- cut(Time, breaks = "1 min")
+  Depth <- aggregate(Depth_calc ~ Depth_time, FUN = base::mean)
+  return(Depth)
+}
+```
+
+```{r}
+#Measure 6 (Trade Time Execution)
+
+Trade_Time_func <- function(stock){
+  df <- stock
+  Time <- df$time
+  TradeTime_calc <- as.numeric(diff(Time))
+  TradeTime_time <- cut(Time, breaks = "1 min")
+  TradeTime <- aggregate(TradeTime_calc ~ TradeTime_time[-1], FUN = base::mean)
+  TradeTime_calc <- as.numeric(TradeTime_calc)
+  return(TradeTime)
+  
+}
+```
+
+```{r}
+#Measure 7 (Relative Spread - Mid-Price*) 
+
+RS_mid_func <- function(stock){
+   df <- stock
+   Bid_Price <- df$bidprice
+   Ask_Price <- df$askprice
+   Midpoint <- df$midpoint
+   Time <- df$time
+   RS_mid_calc <-  (Ask_Price-Bid_Price)/(Midpoint)
+   RS_mid_time <- cut(Time, breaks = "1 min")
+   RS_mid <- aggregate(RS_mid_calc ~ RS_mid_time, FUN = base::mean)
+   return(RS_mid)
+}
+```
+
+```{r}
+#Measure 8 (Relative Spread - Last-Price*) 
+
+RS_last_func <- function(stock){
+   df <- stock
+   Bid_Price <- df$bidprice
+   Ask_Price <- df$askprice
+   Price <- df$price
+   Time <- df$time
+   RS_last_calc <-  (Ask_Price-Bid_Price)/(Price)
+   RS_last_time <- cut(Time, breaks = "1 min")
+   RS_last <- aggregate(RS_last_calc ~ RS_last_time, FUN = base::mean)
+   return(RS_last)
+}
+
+```
+
+
+```{r}
+#Measure 9 (Effective Spread)
+
+Eff_Spread_func <- function(stock){
+    df <- stock
+    Price <- df$price
+    Time <- df$time
+    Midpoint <- df$midpoint
+    EffSpread_calc <-  abs(Price-Midpoint)
+    EffSpread_time <- cut(Time, breaks = "1 min")
+    EffSpread <- aggregate(EffSpread_calc ~ EffSpread_time, FUN = base::mean)
+    return(EffSpread)
+}
+
+```
+
+```{r}
+#Measure 10 (Relative Effective Spread - Mid-Price*)
+
+RES_mid_func <- function(stock){
+  df <- stock
+  Price <- df$price
+  Time <- df$time
+  Midpoint <- df$midpoint
+  RES_mid_calc <- (Price-Midpoint)/(Midpoint)
+  RES_mid_time <- cut(Time, breaks = "1 min")
+  RES_mid <- aggregate(RES_mid_calc ~ RES_mid_time, FUN = base::mean)
+  return(RES_mid)
+}
+
+  
+```
+
+```{r}
+#Measure 11 (Relative Effective Spread - Last-Price*)
+
+RES_last_func <- function(stock){
+  df <- stock
+  Price <- df$price
+  Time <- df$time
+  Midpoint <- df$midpoint
+  RES_last_calc <- (Price-Midpoint)/(Price)
+  RES_last_time <- cut(Time, breaks = "1 min")
+  RES_last <- aggregate(RES_last_calc ~ RES_last_time, FUN = base::mean)
+  return(RES_last)
+}
+```
+
+
+```{r}
+#Measure 12 (Imputed Roundtrip Cost)
+
+Imputed_Roundtrip_func <- function(stock){
+   df <- stock
+   Price <- df$price
+   Time <- df$time
+   IRC_calc <- 0  
+   IRC_list <- c()
+   IRC_time <- cut(Time, breaks = "1 mins")
+   
+   for(i in unique(IRC_time)){
+     
+      IRC_data <- Price[IRC_time == i]
+     
+      if (length(IRC_data) > 1) {
+        
+        min_price <- min(IRC_data, na.rm = TRUE)
+        max_price <- max(IRC_data, na.rm = TRUE)
+        IRC_calc <- (max_price - min_price)/min_price
+      }
+       IRC_list <- c(IRC_list,IRC_calc)
+   }  
+     IRC_time <- unique(IRC_time)
+     IRC_calc <- IRC_list
+     IRC <- aggregate(IRC_calc ~ IRC_time, FUN = base::mean)
+     return(IRC)
+}
+
+```
+
+
+```{r}
+#Measure 13 (Quote Slope)
+
+Quote_Slope_func <- function(stock){
+   df <- stock 
+   spread <- Abs_Spread_func(stock)$Abs_Spread_calc
+   depth <- Log_depth_func(stock)$Log_depth_calc
+   Time  <- df$time
+   Quote_Slope_calc <- spread/depth
+   Quote_Slope_time <- Abs_Spread_func(stock)$Abs_Spread_time
+   QuoteSlope <- aggregate(Quote_Slope_calc ~ Quote_Slope_time, FUN = base::mean)
+   return(QuoteSlope)
+}
+```
+
+```{r}
+#Measure 14 (Dollar Depth) 
+
+DollarDepth_func <- function(stock){
+  df <- stock
+  Bid_Size <- df$bidsize
+  Ask_Size <- df$asksize
+  Bid_Price <- df$bidprice 
+  Ask_Price <- df$askprice 
+  Time <- df$time
+  DollarDepth_calc <- (Bid_Size*Bid_Price + Ask_Size*Ask_Price)/2 
+  DollarDepth_time <- cut(Time, breaks = "1 min")
+  DollarDepth <- aggregate(DollarDepth_calc ~ DollarDepth_time, FUN = base::mean)
+  return(DollarDepth)
+}
+```
+
+
+```{r}
+#Measure 15 (Order Ratio)
+ 
+
+Order_Ratio_func <- function(stock){
+  df <- stock
+  Turnover <- Turnover_func(stock)$Turnover_calc
+  Bid_Size <- df$bidsize
+  Ask_Size <- df$asksize
+  Time <- df$time
+  Order_Ratio_calc <- (abs(Bid_Size-Ask_Size))/Turnover
+  Order_Ratio_time <- cut(Time, breaks = "1 min")
+  Order_Ratio <- aggregate(Order_Ratio_calc ~ Order_Ratio_time, FUN = base::mean)
+  return(Order_Ratio)
+}
+```
+
+
+
+
+
+```{r}
+
+#Outlier Classification Model 
+
+
+Outlier_Class_M <- function(stock){
+  
+# (This is when low outliers = low liquidity and when high outliers = high liquidity)
+
+outliers_df <- function(measure, data, calc, time) {
+outliers_percentiles <- percentile_outliers(data,calc)
+  
+low_liquidity_outliers_df <- data.frame(time = time[outliers_percentiles$low_liquidity_outliers], outliers = calc[outliers_percentiles$low_liquidity_outliers])
+high_liquidity_outliers_df <- data.frame(time = time[outliers_percentiles$high_liquidity_outliers],outliers = calc[outliers_percentiles$high_liquidity_outliers])                              
+column_names_low <- c("time",paste(measure,"low_liquidity_outliers", sep = "_" ))
+column_names_high <- c("time",paste(measure, "high_liquidity_outliers", sep = "_"))
+  
+low_liquidity_outliers_df_new <- setNames(low_liquidity_outliers_df,column_names_low)
+high_liquidity_outliers_df_new <- setNames(high_liquidity_outliers_df,column_names_high)
+  
+liquidity_outlier_df <- full_join(low_liquidity_outliers_df_new,high_liquidity_outliers_df_new, by = "time")
+return(liquidity_outlier_df)
+}  
+
+# (This is when high outliers = low liquidity and when low outliers = high liquidity)
+
+outliers_alt_df <- function(measure, data, calc, time) {
+outliers_percentiles <- percentile_alt_outliers(data,calc)
+  
+low_liquidity_outliers_df <- data.frame(time = time[outliers_percentiles$low_liquidity_outliers], outliers = calc[outliers_percentiles$low_liquidity_outliers])
+high_liquidity_outliers_df <- data.frame(time = time[outliers_percentiles$high_liquidity_outliers],outliers = calc[outliers_percentiles$high_liquidity_outliers])                              
+column_names_low <- c("time",paste(measure,"low_liquidity_outliers", sep = "_" ))
+column_names_high <- c("time",paste(measure, "high_liquidity_outliers", sep = "_"))
+  
+low_liquidity_outliers_df_new <- setNames(low_liquidity_outliers_df,column_names_low)
+high_liquidity_outliers_df_new <- setNames(high_liquidity_outliers_df,column_names_high)
+  
+liquidity_outlier_df <- full_join(low_liquidity_outliers_df_new,high_liquidity_outliers_df_new, by = "time")
+return(liquidity_outlier_df)
+}  
+
+Abs_Spread_outliers <- outliers_alt_df("Abs_Spread", Abs_Spread_func(stock), Abs_Spread_func(stock)$Abs_Spread_calc, Abs_Spread_func(stock)$Abs_Spread_time)
+Log_Depth_outliers <- outliers_df("Log_Depth", Log_depth_func(stock), Log_depth_func(stock)$Log_depth_calc, Log_depth_func(stock)$Log_depth_time)
+Trading_Volume_outliers <- outliers_df("Trading_Vol",Trading_Vol_func(stock), Trading_Vol_func(stock)$Trading_Vol_calc, Trading_Vol_func(stock)$Trading_Vol_time)
+Turnover_outliers <- outliers_df("Turnover",Turnover_func(stock), Turnover_func(stock)$Turnover_calc,Turnover_func(stock)$Turnover_time)
+Depth_outliers <- outliers_df("Depth", Depth_func(stock), Depth_func(stock)$Depth_calc, Depth_func(stock)$Depth_time)
+Trade_Time_outliers <- outliers_alt_df("TradeTime",Trade_Time_func(stock),Trade_Time_func(stock)$TradeTime_calc, Trade_Time_func(stock)$TradeTime_time)
+RS_mid_outliers <- outliers_alt_df("RS_mid",RS_mid_func(stock), RS_mid_func(stock)$RS_mid_calc, RS_mid_func(stock)$RS_mid_time)
+RS_last_outliers <- outliers_alt_df("RS_last",RS_last_func(stock), RS_last_func(stock)$RS_last_calc, RS_last_func(stock)$RS_last_time)
+Eff_Spread_outliers <- outliers_alt_df("EffSpread",Eff_Spread_func(stock), Eff_Spread_func(stock)$EffSpread_calc,  Eff_Spread_func(stock)$EffSpread_time)
+RES_mid_outliers <- outliers_alt_df("RES_mid",RES_mid_func(stock), RES_mid_func(stock)$RES_mid_calc, RES_mid_func(stock)$RES_mid_time)
+RES_last_outliers <- outliers_alt_df("RES_last",RES_last_func(stock), RES_last_func(stock)$RES_last_calc, RES_last_func(stock)$RES_last_time)
+Quote_Slope_outliers <- outliers_alt_df("Quote_Slope",Quote_Slope_func(stock), Quote_Slope_func(stock)$Quote_Slope_calc, Quote_Slope_func(stock)$Quote_Slope_time)
+DollarDepth_outliers <- outliers_df("DollarDepth",DollarDepth_func(stock), DollarDepth_func(stock)$DollarDepth_calc, DollarDepth_func(stock)$DollarDepth_time)
+Order_Ratio_outliers <- outliers_df("Order_Ratio",Order_Ratio_func(stock),Order_Ratio_func(stock)$Order_Ratio_calc,  Order_Ratio_func(stock)$Order_Ratio_time)
+Imputed_Roundtrip_outliers <- outliers_alt_df("IRC",Imputed_Roundtrip_func(stock), Imputed_Roundtrip_func(stock)$IRC_calc, Imputed_Roundtrip_func(stock)$IRC_time)
+
+df <- list(Abs_Spread_outliers,Log_Depth_outliers,Trading_Volume_outliers,Turnover_outliers,Depth_outliers,Trade_Time_outliers,RS_mid_outliers,RS_last_outliers, Eff_Spread_outliers, RES_mid_outliers, RES_last_outliers, Quote_Slope_outliers,DollarDepth_outliers,Order_Ratio_outliers,Imputed_Roundtrip_outliers)
+combined_outliers_df <- reduce(df,full_join, by = "time")
+combined_outliers_df <- combined_outliers_df %>% arrange(time)
+
+odd_columns <- seq(1, ncol(combined_outliers_df), by = 2)
+even_columns <- seq(2, ncol(combined_outliers_df), by = 2)
+even_columns <- c(1, even_columns)
+
+low_liquidity_outliers <- combined_outliers_df[, even_columns]
+low_liquidity_outliers$time <- as.POSIXct(low_liquidity_outliers$time)
+
+high_liquidity_outliers <- combined_outliers_df[, odd_columns]
+high_liquidity_outliers$time <- as.POSIXct(high_liquidity_outliers$time)
+
+
+low_liquidity_outliers_count <- data.frame(time = low_liquidity_outliers$time, low_liquidity_outliers_count = rowSums(!is.na(low_liquidity_outliers))-1)
+high_liquidity_outliers_count <- data.frame(time = high_liquidity_outliers$time, high_liquidity_outliers_count = rowSums(!is.na(high_liquidity_outliers))-1)
+
+liquidity_outliers_count <- full_join(low_liquidity_outliers_count,high_liquidity_outliers_count, by = "time")
+
+Time <- stock$time
+Price <- stock$price 
+time <- cut(Time, breaks = "1 min")
+time <- as.POSIXct(time)
+data <- aggregate(Price ~ time, FUN = base::mean)
+color_data <- full_join(data,liquidity_outliers_count, by = "time")
+
+data <- data.frame(time = color_data$time, price = color_data$Price, low_liquidity_outliers_counts = replace(color_data$low_liquidity_outliers_count, is.na(color_data$low_liquidity_outliers_count),0), high_liquidity_outliers_counts = replace(color_data$high_liquidity_outliers_count,is.na(color_data$high_liquidity_outliers_count),0))
+
+data$liquidity_difference <- data$high_liquidity_outliers_counts - data$low_liquidity_outliers_counts
+
+colors <- c("blue", "red", "purple", "black")
+
+data$outlier_difference_color <- ifelse(data$liquidity_difference < 0, colors[1], ifelse(data$liquidity_difference > 0, colors[2], ifelse(data$low_liquidity_outliers_counts == 0 & data$high_liquidity_outliers_counts == 0, colors[4], colors[3])))
+
+data$size_blue <- ifelse(data$outlier_difference_color == "blue", abs(data$liquidity_difference),NA)
+data$size_red <-  ifelse(data$outlier_difference_color == "red", abs(data$liquidity_difference),NA)
+data$size_purple <- ifelse(data$outlier_difference_color == "purple", abs(data$low_liquidity_outliers_counts+data$high_liquidity_outliers_counts/2),NA)
+
+
+data$point_color <- NA
+
+for (i in seq_along(data$outlier_difference_color)) {
+  row_num <- i
+
+  if (data$outlier_difference_color[i] == "blue") {
+    if (abs(data$liquidity_difference[row_num]) == 1) {
+      data$point_color[i] <- "dodgerblue"
+    }
+    else if (abs(data$liquidity_difference[row_num]) == 2) {
+      data$point_color[i] <- "dodgerblue2"
+    } 
+    else if (abs(data$liquidity_difference[row_num]) == 3) {
+      data$point_color[i] <- "dodgerblue3"
+    } 
+    else if (abs(data$liquidity_difference[row_num]) == 4) {
+      data$point_color[i] <- "dodgerblue4"
+    } 
+    else {
+      data$point_color[i] <- "darkblue"
+    }
+  } 
+  else if (data$outlier_difference_color[i] == "red") {
+    if (abs(data$liquidity_difference[row_num]) == 1) {
+      data$point_color[i] <- "firebrick1"
+    } 
+    else if (abs(data$liquidity_difference[row_num]) == 2) {
+      data$point_color[i] <- "firebrick2"
+    } 
+    else if (abs(data$liquidity_difference[row_num]) == 3) {
+      data$point_color[i] <- "firebrick3"
+    } 
+    else if (abs(data$liquidity_difference[row_num]) == 4) {
+      data$point_color[i] <- "firebrick"
+    } 
+  else {
+    data$point_color[i] <- "darkred"
+  }
+}
+  else{
+    data$point_color[i] <- "purple"
+  }
+ }
+color_breaks <- c("dodgerblue", "dodgerblue2", "dodgerblue3", "dodgerblue4", "darkblue","firebrick1", "firebrick2", "firebrick3", "firebrick", "darkred", "purple")
+color_labels <- c("Low Liquidity Count: 1", "Low Liquidity Count: 2", "Low Liquidity Count: 3", "Low Liquidity Count: 4", "Low Liquidity Count: >=5", "High Liquidity Count: 1", "High Liquidity Count: 2", "High Liquidity Count: 3", "High Liquidity Count: 4", "High Liquidity Count: >=5", "Inconclusive")
+
+outlier_plot <- ggplot(data, aes(x = time, y = price, color = point_color)) +
+  geom_line(color = "black", group = 1) +
+  geom_point(aes(size = ifelse(outlier_difference_color == "blue", size_blue, ifelse(outlier_difference_color == "red", size_red, size_purple))), shape = 16) +
+  scale_size_continuous(range = c(2.25, 6)) +
+  scale_color_manual(values = color_breaks, breaks = color_breaks, labels = color_labels) +
+  labs(x = "Time", y = "Price", color = "Liquidity Gradients", size = "Outlier Counts", title = paste(paste("Outlier Classification Model for", stock$ticker, sep = " "), stock$date, sep = " ")) + theme_minimal() + theme(legend.key.size = unit(0.5, "cm"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 10)) + guides(
+    size = guide_legend(order = 1), color = guide_legend(order = 2))
+
+outlier_plot
+}
+
+Outlier_Class_M(CVX_TAQ_pre1_new)
+Outlier_Class_M(CVX_TAQ_pre2_new)
+Outlier_Class_M(CVX_TAQ_pre3_new)
+Outlier_Class_M(CVX_TAQ_post1_new)
+Outlier_Class_M(CVX_TAQ_post2_new)
+Outlier_Class_M(CVX_TAQ_post3_new)
+Outlier_Class_M(XOM_TAQ_pre1_new)
+Outlier_Class_M(XOM_TAQ_pre2_new)
+Outlier_Class_M(XOM_TAQ_pre3_new)
+Outlier_Class_M(XOM_TAQ_post1_new)
+Outlier_Class_M(XOM_TAQ_post2_new)
+Outlier_Class_M(XOM_TAQ_post3_new)
+
+
+
+```
+
+
+
+```{r}
+
+#Isolation Forest Model 
+
+ISO_Forest_M <- function(stock){
+
+combined_df <- data.frame(Time = Abs_Spread_func(stock)$Abs_Spread_time, Abs_Spread = Abs_Spread_func(stock)$Abs_Spread_calc, Log_Depth = Log_depth_func(stock)$Log_depth_calc, Trading_Vol = Trading_Vol_func(stock)$Trading_Vol_calc, Turnover = Turnover_func(stock)$Turnover_calc, Depth = Depth_func(stock)$Depth_calc, TradeTime = Trade_Time_func(stock)$TradeTime_calc, RS_mid =  RS_mid_func(stock)$RS_mid_calc, RS_last = RS_last_func(stock)$RS_last_calc, Eff_Spread =  Eff_Spread_func(stock)$EffSpread_calc, RES_mid = RES_mid_func(stock)$RES_mid_calc, RES_last = RES_last_func(stock)$RES_last_calc, Imputed_Roundtrip = Imputed_Roundtrip_func(stock)$IRC_calc, Quote_Slope = Quote_Slope_func(stock)$Quote_Slope_calc, DollarDepth =  DollarDepth_func(stock)$DollarDepth_calc, Order_Ratio = Order_Ratio_func(stock)$Order_Ratio_calc)
+
+combined_df$Time <- as.POSIXct(combined_df$Time)
+
+df1 <- data.frame(combined_df$Abs_Spread)
+df2 <- data.frame(combined_df$Log_Depth)
+df3 <- data.frame(combined_df$Trading_Vol)
+df4 <- data.frame(combined_df$Turnover)
+df5 <- data.frame(combined_df$Depth)
+df6 <- data.frame(combined_df$TradeTime)
+df7 <- data.frame(combined_df$RS_mid)
+df8 <- data.frame(combined_df$RS_last)
+df9 <- data.frame(combined_df$Eff_Spread)
+df10 <- data.frame(combined_df$RES_mid)
+df11 <- data.frame(combined_df$RES_last)
+df12 <- data.frame(combined_df$Imputed_Roundtrip)
+df13 <- data.frame(combined_df$Quote_Slope)
+df14 <- data.frame(combined_df$DollarDepth)
+df15 <- data.frame(combined_df$Order_Ratio)
+
+model_1 <- isolation.forest(df1, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_AS <- data.frame(combined_df$Time,model_1$scores)
+model_2 <- isolation.forest(df2, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_LD <- data.frame(combined_df$Time,model_2$scores)
+model_3 <- isolation.forest(df3, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_TV <- data.frame(combined_df$Time,model_3$scores)
+model_4 <- isolation.forest(df4, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_TR <- data.frame(combined_df$Time,model_4$scores)
+model_5 <- isolation.forest(df5, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_D <- data.frame(combined_df$Time,model_5$scores)
+model_6 <- isolation.forest(df6, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_TT <- data.frame(combined_df$Time,model_6$scores)
+model_7 <- isolation.forest(df7, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_RSmid <- data.frame(combined_df$Time,model_7$scores)
+model_8 <- isolation.forest(df8, ntrees=100, output_score = TRUE, output_dist = TRUE)
+model_8$scores
+df_RSlast <- data.frame(combined_df$Time,model_8$scores)
+model_9 <- isolation.forest(df9, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_ES <- data.frame(combined_df$Time,model_9$scores)
+model_10 <- isolation.forest(df10, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_RESmid <- data.frame(combined_df$Time,model_10$scores)
+model_11 <- isolation.forest(df11, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_RESlast <- data.frame(combined_df$Time,model_11$scores)
+model_12 <- isolation.forest(df12, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_IR <- data.frame(combined_df$Time,model_12$scores)
+model_13 <- isolation.forest(df13, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_QS <- data.frame(combined_df$Time,model_13$scores)
+model_14 <- isolation.forest(df14, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_DD <- data.frame(combined_df$Time,model_14$scores)
+model_15 <- isolation.forest(df15, ntrees=100, output_score = TRUE, output_dist = TRUE)
+df_OR <- data.frame(combined_df$Time,model_15$scores)
+
+
+iso_df <- list(df_AS,df_LD,df_TV,df_TR,df_D,df_TT,df_RSmid,df_RSlast,df_ES,df_RESmid,df_RESlast,df_IR,df_QS,df_DD,df_OR)
+combined_iso_df <- reduce(iso_df, full_join)
+
+min_max_scaling <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+model_cols <- grep("^model_\\d+\\.scores$", names(combined_iso_df), value = TRUE)
+combined_iso_df[model_cols] <- lapply(combined_iso_df[model_cols], min_max_scaling)
+
+thrshld <- numeric(ncol(combined_iso_df)-1)
+for (i in seq(2:ncol(combined_iso_df))){
+last_percentile <- as.vector(quantile(combined_iso_df[-1][,i], 0.99))
+thrshld[i] <- last_percentile
+}
+
+counts <- apply(combined_iso_df[-1], 1, function(x) sum(x > thrshld))
+
+iso_outlier_counts <- data.frame(Time = combined_df$Time, Outliers = counts)
+
+CVX_TAQ <- stock
+
+Time <- CVX_TAQ$time
+Price <- CVX_TAQ$price 
+time <- cut(Time, breaks = "1 min")
+time <- as.POSIXct(time)
+data <- aggregate(Price ~ time, FUN = base::mean)
+
+
+iso_outlier_counts$Price <- data$Price
+
+iso_outlier_counts
+
+
+ggplot(iso_outlier_counts, aes(x = Time, y = Price)) +
+  geom_line(color = "black", group = 1) +
+  geom_point(data = subset(iso_outlier_counts, Outliers > 0), aes(size = Outliers), shape = 16) +
+  scale_size_continuous(range = c(2,6)) +
+  labs(x = "Time", y = "Price", color = "Outlier Counts", size = "Outlier Counts", title = paste(paste("ISO Forest Outlier Method for", stock$ticker, sep = " "), stock$date, sep = " ")) +
+  theme_minimal()
+}
+
+ISO_Forest_M(CVX_TAQ_pre1_new)
+ISO_Forest_M(CVX_TAQ_pre2_new)
+ISO_Forest_M(CVX_TAQ_pre3_new)
+ISO_Forest_M(CVX_TAQ_post1_new)
+ISO_Forest_M(CVX_TAQ_post2_new)
+ISO_Forest_M(CVX_TAQ_post3_new)
+ISO_Forest_M(XOM_TAQ_pre1_new)
+ISO_Forest_M(XOM_TAQ_pre2_new)
+ISO_Forest_M(XOM_TAQ_pre3_new)
+ISO_Forest_M(XOM_TAQ_post1_new)
+ISO_Forest_M(XOM_TAQ_post2_new)
+ISO_Forest_M(XOM_TAQ_post3_new)
+
+
+```
+
+
+
+
+
+
